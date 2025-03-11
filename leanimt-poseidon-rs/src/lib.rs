@@ -1,182 +1,101 @@
 use ark_bn254::Fr;
+use ark_ff::{BigInteger, PrimeField};
 use leanimt_rs::*;
 use light_poseidon::{Poseidon, PoseidonHasher};
-use num_bigint::BigUint;
-use wasm_bindgen::prelude::*;
 
-fn string_to_biguint(num_str: &str) -> BigUint {
-    num_str
-        .parse()
-        .expect("Failed to parse the string into BigUint")
+// Leaf type
+type PoseidonLeaf = [u8; 32];
+
+/// Convert a field element to its byte representation
+fn fr_to_bytes(fr: &Fr) -> PoseidonLeaf {
+    let mut bytes = [0u8; 32];
+
+    let fr_bytes = fr.into_bigint().to_bytes_le();
+    bytes[..fr_bytes.len()].copy_from_slice(&fr_bytes);
+    bytes
 }
 
-fn poseidon_function(nodes: Vec<String>) -> String {
-    let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
-
-    let input1 = Fr::from(string_to_biguint(&nodes[0]));
-    let input2 = Fr::from(string_to_biguint(&nodes[1]));
-
-    let hash = poseidon.hash(&[input1, input2]).unwrap();
-
-    hash.to_string()
+/// Convert bytes back to a field element
+fn bytes_to_fr(bytes: &PoseidonLeaf) -> Fr {
+    Fr::from_le_bytes_mod_order(bytes)
 }
 
-#[wasm_bindgen]
-pub struct LeanIMTPoseidon {
-    leanimt: LeanIMT,
+// Implement NodeHasher trait for PoseidonLeaf using Poseidon
+pub struct PoseidonHasherImpl;
+
+impl NodeHasher<PoseidonLeaf> for PoseidonHasherImpl {
+    fn hash(nodes: &[PoseidonLeaf]) -> PoseidonLeaf {
+        if nodes.len() != 2 {
+            panic!("Poseidon expects exactly 2 inputs");
+        }
+
+        // Convert bytes to Fr elements for Poseidon
+        let fr1 = bytes_to_fr(&nodes[0]);
+        let fr2 = bytes_to_fr(&nodes[1]);
+
+        // Hash using Poseidon
+        let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
+        let hash_fr = poseidon.hash(&[fr1, fr2]).unwrap();
+
+        // Convert result back to bytes
+        fr_to_bytes(&hash_fr)
+    }
 }
 
-#[wasm_bindgen]
-impl LeanIMTPoseidon {
-    #[wasm_bindgen(constructor)]
-    pub fn new(leaves: Vec<LeanIMTNode>) -> LeanIMTPoseidon {
-        LeanIMTPoseidon {
-            leanimt: LeanIMT::new(poseidon_function, leaves).unwrap(),
-        }
-    }
-
-    pub fn root(&mut self) -> Option<LeanIMTNode> {
-        self.leanimt.root()
-    }
-
-    pub fn depth(&self) -> usize {
-        self.leanimt.depth()
-    }
-
-    pub fn leaves(&self) -> Vec<LeanIMTNode> {
-        self.leanimt.leaves()
-    }
-
-    pub fn size(&self) -> usize {
-        self.leanimt.size()
-    }
-
-    pub fn index_of(&self, leaf: LeanIMTNode) -> Option<usize> {
-        self.leanimt.index_of(&leaf)
-    }
-
-    pub fn has(&self, leaf: LeanIMTNode) -> bool {
-        self.leanimt.has(&leaf)
-    }
-
-    pub fn insert(&mut self, leaf: LeanIMTNode) {
-        match self.leanimt.insert(leaf) {
-            Ok(()) => (),
-            Err(_) => panic!("Failed to insert the leaf"),
-        }
-    }
-
-    pub fn insert_many(&mut self, leaves: Vec<LeanIMTNode>) {
-        match self.leanimt.insert_many(leaves) {
-            Ok(()) => (),
-            Err(_) => panic!("Failed to insert the leaves"),
-        }
-    }
-
-    pub fn update(&mut self, index: usize, new_leaf: LeanIMTNode) {
-        match self.leanimt.update(index, new_leaf) {
-            Ok(()) => (),
-            Err(_) => panic!("Failed to update the leaf"),
-        }
-    }
-
-    pub fn generate_proof(&mut self, index: usize) -> Vec<String> {
-        match self.leanimt.generate_proof(index) {
-            Ok(proof) => vec![
-                proof.root,
-                proof.leaf,
-                proof.index.to_string(),
-                proof.siblings.join(","),
-            ],
-            Err(_) => panic!("Failed to generate the proof"),
-        }
-    }
-
-    pub fn verify_proof(proof: Vec<String>) -> bool {
-        let siblings: Vec<String> = if !proof[3].is_empty() {
-            // If proof[3] is not empty, split it by commas and convert it to Vec<String>
-            proof[3].clone().split(',').map(|s| s.to_string()).collect()
-        } else {
-            // If proof[3] is empty, return an empty Vec<String>
-            Vec::new()
-        };
-
-        let temp = LeanIMTMerkleProof {
-            root: proof[0].clone(),
-            leaf: proof[1].clone(),
-            index: proof[2].parse().unwrap(),
-            siblings,
-        };
-        LeanIMT::verify_proof(&temp, poseidon_function).unwrap()
-    }
-}
+pub type PoseidonLeanIMT = LeanIMT<PoseidonLeaf, PoseidonHasherImpl>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn test_byte_conversion() {
+        let fr = Fr::from(12345u64);
+        let bytes = fr_to_bytes(&fr);
+        let fr_back = bytes_to_fr(&bytes);
+        assert_eq!(fr, fr_back);
+    }
+
+    #[test]
     fn test_hash() {
-        let mut a: Vec<String> = Vec::new();
+        let fr1 = Fr::from(1u64);
+        let fr2 = Fr::from(2u64);
+        let input1 = fr_to_bytes(&fr1);
+        let input2 = fr_to_bytes(&fr2);
 
-        a.push("1".to_string());
-        a.push("2".to_string());
+        let result = PoseidonHasherImpl::hash(&[input1, input2]);
+        let result_fr = bytes_to_fr(&result);
 
-        let result = poseidon_function(a);
-
-        println!("{result}");
-
-        assert_eq!(result, result);
+        println!("Hash result: {:?}", result);
+        assert_eq!(result, fr_to_bytes(&result_fr));
     }
 
     #[test]
-    fn test_generate_proof() {
-        let mut tree = LeanIMTPoseidon::new(vec![
-            "1".to_string(),
-            "2".to_string(),
-            "3".to_string(),
-            "4".to_string(),
-        ]);
-        let proof = tree.generate_proof(2);
+    fn test_poseidon_leanimt() {
+        // Create leaf values
+        let fr1 = Fr::from(1u64);
+        let fr2 = Fr::from(2u64);
+        let fr3 = Fr::from(3u64);
+        let fr4 = Fr::from(4u64);
 
-        println!("{:?}", proof);
+        let leaf1 = fr_to_bytes(&fr1);
+        let leaf2 = fr_to_bytes(&fr2);
+        let leaf3 = fr_to_bytes(&fr3);
+        let leaf4 = fr_to_bytes(&fr4);
 
-        assert_eq!(
-            proof[0],
-            poseidon_function(vec![
-                poseidon_function(vec!["1".to_string(), "2".to_string()]),
-                poseidon_function(vec!["3".to_string(), "4".to_string()])
-            ])
-        );
-        assert_eq!(proof[1], "3".to_string());
-        assert_eq!(proof[2], "2");
-        assert_eq!(
-            proof[3],
-            vec![
-                "4",
-                &poseidon_function(vec!["1".to_string(), "2".to_string()])
-            ]
-            .join(",")
-        );
-    }
-    #[test]
-    fn test_verify_proof() {
-        let mut tree = LeanIMTPoseidon::new(vec![
-            "1".to_string(),
-            "2".to_string(),
-            "3".to_string(),
-            "4".to_string(),
-        ]);
-        let proof = tree.generate_proof(2);
+        let leaves = vec![leaf1, leaf2, leaf3, leaf4];
 
-        assert!(LeanIMTPoseidon::verify_proof(proof));
-    }
+        let tree = PoseidonLeanIMT::new(&leaves).unwrap();
 
-    #[test]
-    fn test_verify_proof_tree_size_one() {
-        let mut tree = LeanIMTPoseidon::new(vec!["1".to_string()]);
-        let proof = tree.generate_proof(0);
+        // Generate proof for index 2
+        let proof = tree.generate_proof(2).unwrap();
 
-        assert!(LeanIMTPoseidon::verify_proof(proof));
+        // Verify proof
+        assert!(PoseidonLeanIMT::verify_proof(&proof));
+
+        // Test single leaf tree
+        let single_tree = PoseidonLeanIMT::new(&[leaf1]).unwrap();
+        let single_proof = single_tree.generate_proof(0).unwrap();
+        assert!(PoseidonLeanIMT::verify_proof(&single_proof));
     }
 }

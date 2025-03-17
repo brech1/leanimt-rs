@@ -30,7 +30,7 @@ impl LeanIMT {
     /// Creates a new tree with optional initial leaves.
     pub fn new(
         leaves: &[Vec<u8>],
-        hash: impl Fn(&[Vec<u8>]) -> Vec<u8>,
+        hash: impl Fn(Vec<u8>) -> Vec<u8>,
     ) -> Result<Self, &'static str> {
         let mut imt = Self {
             nodes: vec![vec![]],
@@ -84,7 +84,7 @@ impl LeanIMT {
     pub fn insert(
         &mut self,
         leaf: &[u8],
-        hash: impl Fn(&[Vec<u8>]) -> Vec<u8>,
+        hash: impl Fn(Vec<u8>) -> Vec<u8>,
     ) -> Result<(), &'static str> {
         let new_size = self.size() + 1;
         let new_depth = new_size.next_power_of_two().trailing_zeros() as usize;
@@ -105,7 +105,9 @@ impl LeanIMT {
 
             if index & 1 != 0 {
                 let sibling = &self.nodes[level][index - 1];
-                node = hash(&[sibling.clone(), node]);
+                let mut hash_input = sibling.clone();
+                hash_input.extend(node.iter());
+                node = hash(hash_input);
             }
 
             index >>= 1;
@@ -119,7 +121,7 @@ impl LeanIMT {
     pub fn insert_many(
         &mut self,
         leaves: &[Vec<u8>],
-        hash: impl Fn(&[Vec<u8>]) -> Vec<u8>,
+        hash: impl Fn(Vec<u8>) -> Vec<u8>,
     ) -> Result<(), &'static str> {
         if leaves.is_empty() {
             return Err("There are no leaves to add");
@@ -142,7 +144,10 @@ impl LeanIMT {
                 let left_node = &self.nodes[level][index * 2];
                 let parent_node = if index * 2 + 1 < self.nodes[level].len() {
                     let right_node = &self.nodes[level][index * 2 + 1];
-                    hash(&[left_node.clone(), right_node.clone()])
+
+                    let mut hash_input = left_node.clone();
+                    hash_input.extend(right_node.iter());
+                    hash(hash_input)
                 } else {
                     left_node.clone()
                 };
@@ -164,7 +169,7 @@ impl LeanIMT {
         &mut self,
         mut index: usize,
         new_leaf: &[u8],
-        hash: impl Fn(&[Vec<u8>]) -> Vec<u8>,
+        hash: impl Fn(Vec<u8>) -> Vec<u8>,
     ) -> Result<(), &'static str> {
         if index >= self.size() {
             return Err("Index out of bounds");
@@ -177,9 +182,14 @@ impl LeanIMT {
             self.nodes[level][index] = node.clone();
             if index & 1 != 0 {
                 let sibling = &self.nodes[level][index - 1];
-                node = hash(&[sibling.clone(), node]);
+
+                let mut hash_input = sibling.clone();
+                hash_input.extend(node.iter());
+                node = hash(hash_input);
             } else if let Some(sibling) = self.nodes[level].get(index + 1) {
-                node = hash(&[node, sibling.clone()]);
+                let mut hash_input = node.clone();
+                hash_input.extend(sibling.iter());
+                node = hash(hash_input);
             }
             index >>= 1;
         }
@@ -201,6 +211,7 @@ impl LeanIMT {
         for level in 0..self.depth() {
             let is_right_node = index & 1 != 0;
             let sibling_index = if is_right_node { index - 1 } else { index + 1 };
+
             if let Some(sibling) = self.nodes[level].get(sibling_index).cloned() {
                 path.push(is_right_node);
                 siblings.push(sibling);
@@ -223,13 +234,17 @@ impl LeanIMT {
     }
 
     /// Verifies a Merkle proof.
-    pub fn verify_proof(proof: &LeanIMTMerkleProof, hash: impl Fn(&[Vec<u8>]) -> Vec<u8>) -> bool {
+    pub fn verify_proof(proof: &LeanIMTMerkleProof, hash: impl Fn(Vec<u8>) -> Vec<u8>) -> bool {
         let mut node = proof.leaf.to_vec();
         for (i, sibling) in proof.siblings.iter().enumerate() {
             node = if (proof.index >> i) & 1 != 0 {
-                hash(&[sibling.clone(), node])
+                let mut hash_input = sibling.clone();
+                hash_input.extend(node.iter());
+                hash(hash_input)
             } else {
-                hash(&[node, sibling.clone()])
+                let mut hash_input = node.clone();
+                hash_input.extend(sibling.iter());
+                hash(hash_input)
             };
         }
         proof.root == node
